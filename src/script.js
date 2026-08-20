@@ -13,6 +13,148 @@ var Colors = {
     blue: 0x51C4D3,
 };
 
+class SoundSystem {
+    constructor() {
+        this.ctx = null;
+        this.engineOsc = null;
+        this.engineGain = null;
+        this.engineLowpass = null;
+        this.propellerOsc = null;
+        this.propellerGain = null;
+        this.initialized = false;
+    }
+
+    init() {
+        if (this.initialized) return;
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextClass) return;
+        this.ctx = new AudioContextClass();
+        this.initialized = true;
+        this.setupEngine();
+    }
+
+    resume() {
+        if (this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume();
+        }
+    }
+
+    setupEngine() {
+        const ctx = this.ctx;
+        this.engineLowpass = ctx.createBiquadFilter();
+        this.engineLowpass.type = 'lowpass';
+        this.engineLowpass.frequency.value = 120; 
+        this.engineLowpass.Q.value = 1;
+
+        this.engineOsc = ctx.createOscillator();
+        this.engineOsc.type = 'sawtooth';
+        this.engineOsc.frequency.value = 45; 
+
+        this.engineGain = ctx.createGain();
+        this.engineGain.gain.value = 0.0;
+
+        this.propellerOsc = ctx.createOscillator();
+        this.propellerOsc.type = 'sine';
+        this.propellerOsc.frequency.value = 6; 
+
+        this.propellerGain = ctx.createGain();
+        this.propellerGain.gain.value = 10; 
+
+        this.propellerOsc.connect(this.propellerGain);
+        this.propellerGain.connect(this.engineOsc.frequency);
+
+        this.engineOsc.connect(this.engineLowpass);
+        this.engineLowpass.connect(this.engineGain);
+        this.engineGain.connect(ctx.destination);
+
+        this.engineOsc.start(0);
+        this.propellerOsc.start(0);
+    }
+
+    setEngineSpeed(speedRatio) {
+        if (!this.initialized || !this.engineOsc) return;
+        
+        const baseFreq = 45 + speedRatio * 35;
+        this.engineOsc.frequency.setTargetAtTime(baseFreq, this.ctx.currentTime, 0.1);
+
+        const lfoFreq = 6 + speedRatio * 8;
+        this.propellerOsc.frequency.setTargetAtTime(lfoFreq, this.ctx.currentTime, 0.1);
+
+        const targetGain = game.status === "playing" ? (0.08 + speedRatio * 0.06) : 0;
+        this.engineGain.gain.setTargetAtTime(targetGain, this.ctx.currentTime, 0.15);
+    }
+
+    playCrash() {
+        if (!this.initialized) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+
+        const bufferSize = ctx.sampleRate * 0.6; 
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+        }
+
+        const noiseNode = ctx.createBufferSource();
+        noiseNode.buffer = buffer;
+
+        const noiseFilter = ctx.createBiquadFilter();
+        noiseFilter.type = 'lowpass';
+        noiseFilter.frequency.setValueAtTime(500, now);
+        noiseFilter.frequency.exponentialRampToValueAtTime(10, now + 0.6);
+
+        const noiseGain = ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.25, now);
+        noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+
+        noiseNode.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(ctx.destination);
+        noiseNode.start(now);
+
+        const thudOsc = ctx.createOscillator();
+        const thudGain = ctx.createGain();
+
+        thudOsc.type = 'triangle';
+        thudOsc.frequency.setValueAtTime(100, now);
+        thudOsc.frequency.exponentialRampToValueAtTime(10, now + 0.3);
+
+        thudGain.gain.setValueAtTime(0.5, now);
+        thudGain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+
+        thudOsc.connect(thudGain);
+        thudGain.connect(ctx.destination);
+        
+        thudOsc.start(now);
+        thudOsc.stop(now + 0.3);
+    }
+
+    playCoin() {
+        if (!this.initialized) return;
+        const ctx = this.ctx;
+        const now = ctx.currentTime;
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(523.25, now); 
+        osc.frequency.setValueAtTime(659.25, now + 0.08); 
+
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.25);
+    }
+}
+
+var soundSystem;
+
 // GAME VARIABLES
 var game;
 var newTime = new Date().getTime();;
@@ -600,6 +742,7 @@ EnnemiesHolder.prototype.rotateEnnemies = function () {
             ambientLight.intensity = 2;
 
             removeEnergy();
+            if (soundSystem) soundSystem.playCrash();
             i--;
         } else if (ennemy.angle > Math.PI) {
             ennemiesPool.unshift(this.ennemiesInUse.splice(i, 1)[0]);
@@ -737,6 +880,7 @@ CoinsHolder.prototype.rotateCoins = function () {
             this.mesh.remove(coin.mesh);
             particlesHolder.spawnParticles(coin.mesh.position.clone(), 5, 0x009999, .8);
             addEnergy();
+            if (soundSystem) soundSystem.playCoin();
             i--;
         } else if (coin.angle > Math.PI) {
             this.coinsPool.unshift(this.coinsInUse.splice(i, 1)[0]);
@@ -874,22 +1018,20 @@ var mousePos = { x: 0, y: 0 };
 // now handle the mousemove event
 
 function handleMouseMove(event) {
-
-    // here we are converting the mouse position value received 
-    // to a normalized value varying between -1 and 1;
-    // this is the formula for the horizontal axis:
-
+    if (soundSystem) {
+        soundSystem.init();
+        soundSystem.resume();
+    }
     var tx = -1 + (event.clientX / sizes.width) * 2;
-
-    // for the vertical axis, we need to inverse the formula 
-    // because the 2D y-axis goes the opposite direction of the 3D y-axis
-
     var ty = 1 - (event.clientY / sizes.height) * 2;
     mousePos = { x: tx, y: ty };
-
 }
 
 function handleTouchMove(event) {
+    if (soundSystem) {
+        soundSystem.init();
+        soundSystem.resume();
+    }
     event.preventDefault();
     var tx = -1 + (event.touches[0].pageX /sizes.width) * 2;
     var ty = 1 - (event.touches[0].pageY / sizes.height) * 2;
@@ -897,14 +1039,21 @@ function handleTouchMove(event) {
 }
 
 function handleMouseUp(event) {
+    if (soundSystem) {
+        soundSystem.init();
+        soundSystem.resume();
+    }
     if (game.status == "waitingReplay") {
         resetGame();
         hideReplay();
     }
 }
 
-
 function handleTouchEnd(event) {
+    if (soundSystem) {
+        soundSystem.init();
+        soundSystem.resume();
+    }
     if (game.status == "waitingReplay") {
         resetGame();
         hideReplay();
@@ -1100,20 +1249,28 @@ const tick = () => {
         game.baseSpeed += (game.targetBaseSpeed - game.baseSpeed) * deltaTime * 0.02;
         game.speed = game.baseSpeed * game.planeSpeed;
 
-    } else if (game.status == "gameover") {
-        game.speed *= .99;
-        airplane.mesh.rotation.z += (-Math.PI / 2 - airplane.mesh.rotation.z) * .0002 * deltaTime;
-        airplane.mesh.rotation.x += 0.0003 * deltaTime;
-        game.planeFallSpeed *= 1.05;
-        airplane.mesh.position.y -= game.planeFallSpeed * deltaTime;
-
-        if (airplane.mesh.position.y < -200) {
-            showReplay();
-            game.status = "waitingReplay";
-
+        if (soundSystem) {
+            var speedRatio = (game.planeSpeed - game.planeMinSpeed) / (game.planeMaxSpeed - game.planeMinSpeed);
+            soundSystem.setEngineSpeed(speedRatio);
         }
-    } else if (game.status == "waitingReplay") {
 
+    } else {
+        if (soundSystem) {
+            soundSystem.setEngineSpeed(0);
+        }
+        if (game.status == "gameover") {
+            game.speed *= .99;
+            airplane.mesh.rotation.z += (-Math.PI / 2 - airplane.mesh.rotation.z) * .0002 * deltaTime;
+            airplane.mesh.rotation.x += 0.0003 * deltaTime;
+            game.planeFallSpeed *= 1.05;
+            airplane.mesh.position.y -= game.planeFallSpeed * deltaTime;
+
+            if (airplane.mesh.position.y < -200) {
+                showReplay();
+                game.status = "waitingReplay";
+
+            }
+        }
     }
 
 
@@ -1158,6 +1315,7 @@ function init(event) {
     levelCircle = document.getElementById("levelCircleStroke");
 
     resetGame();
+    soundSystem = new SoundSystem();
     // createScene();
 
     // createLights();
